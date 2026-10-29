@@ -1,0 +1,2 @@
+packaging==26.3
+python-nmap==0.7.1
