@@ -1,10 +1,33 @@
+import re
+
 from modules . toctoc import TocToc
 from modules . nmapscan import NmapScan
 from vendors . ExploitDB import ExploitDB
 
-host = "192.168.91.246"
 
-toctoc = TocToc(host, fast=True, protocol="tcp", ports="22,80-139")
+# Known noise that nmap adds to the "product" field, worth cleaning up
+# before searching exploitdb. NOTE: each pattern is anchored (^...$) and
+# targets one specific product, never a generic substring like "ftpd"
+# or "httpd" on their own — that would break legitimate names such as
+# ProFTPD, PureFTPd or vsftpd, which NEED their full name to match
+# entries in the exploitdb catalog.
+_KNOWN_NOISE = {
+    re.compile(r"^Apache httpd$", re.IGNORECASE): "Apache",
+}
+
+
+def normalize_product(product: str) -> str:
+    """Cleans up known noise from nmap's product field without touching
+    legitimate product names (e.g. must not affect vsftpd, ProFTPD, PureFTPd)."""
+    for pattern, replacement in _KNOWN_NOISE.items():
+        if pattern.match(product):
+            return replacement
+    return product
+
+
+host = "192.168.1.205"
+
+toctoc = TocToc(host, fast=True, protocol="tcp", ports="1-20000")
 ports = toctoc.scan()
 
 
@@ -12,27 +35,29 @@ if not ports:
     print("No TCP opens...")
 else:
     ns = NmapScan(host, ports=ports, sudo=True)
-    ns.run()                                   # -sV -O por defecto
+    ns.run()                                   # -sV -O by default
     print(ns.summary())
 
-    # 3. Exportar
-    #ns.to_json("reporte.json")
-    #ns.to_csv("reporte.csv")
+    # 3. Export
+    #ns.to_json("report.json")
+    #ns.to_csv("report.csv")
 
-    # 4. Acceso programático
-    print(ns.versions())
-    print(ns.os_matches())
     edb = ExploitDB()
     edb.ensure_binary()
 
+    os_details = ns.os_matches()
+    if os_details:
+        print(f"OS DETAILS {os_details[0]['name']}, accuracy {os_details[0]['accuracy']}%")
+
     for port, info in ns.versions().items():
-        if not info['product']:
+        product = normalize_product(info['product']) if info['product'] else info['name']
+
+        if not info['version']:
+            print(f"  [*] No info for {product}, missing version...")
             continue
-        find = edb.buscar(info['product'], info['version'])
-        if find:
-            if len(info['version']) <= 0:
-                print(f"  [*] No info for {info['product']} missed versions...")
-                continue
-            print(f"\n[{port}] {info['product']} {info['version']}")
-            for h in find:
-                print(f"   - {h['titulo']}  ->  {h['url_oficial']}")
+
+        findings = edb.search(product, info['version'])
+        if findings:
+            print(f"\n[{port}] {product} {info['version']}")
+            for h in findings:
+                print(f"   - {h['title']}  ->  {h['official_url']}")

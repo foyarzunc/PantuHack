@@ -5,22 +5,22 @@ import resource
 
 class TocToc:
     """
-    Escáner simple de puertos TCP/UDP.
+    Simple TCP/UDP port scanner.
 
-    - TCP: 'open' = connect_ex() == 0 (fiable).
-    - UDP: 'open' = se recibió respuesta del servicio (fiable).
-           Sin respuesta -> 'open|filtered' (no se cuenta como abierto).
+    - TCP: 'open' = connect_ex() == 0 (reliable).
+    - UDP: 'open' = a response was received from the service (reliable).
+           No response -> 'open|filtered' (not counted as open).
 
-    Flag fast=True:
+    fast=True flag:
       - timeouts: TCP 0.5s / UDP 0.3s
       - max_workers: 1000
-      - aviso si ulimit -n < workers*2
-      - si protocol incluye UDP y no se pasaron ports -> usa TOP_UDP_PORTS para UDP
+      - warns if ulimit -n < workers*2
+      - if protocol includes UDP and no ports were given -> uses TOP_UDP_PORTS for UDP
     """
 
     VALID_PROTOCOLS = ('tcp', 'udp', 'both')
 
-    # Top-100 UDP típicos (servicios que de verdad responden)
+    # Typical top-100 UDP ports (services that actually respond)
     TOP_UDP_PORTS = [
         53, 67, 68, 69, 111, 123, 137, 138, 161, 162, 177, 389, 427, 443, 445,
         500, 514, 515, 520, 623, 631, 996, 997, 998, 999, 1022, 1023,
@@ -50,28 +50,28 @@ class TocToc:
                 default_fast_timeout['udp'] if self.fast else default_timeout
             ),
         }
-        # Compat: self.timeout refleja TCP (por si algo externo lo consulta)
+        # Compat: self.timeout mirrors TCP (in case something external reads it)
         self.timeout = self._timeouts['tcp']
 
         # --- workers ---
         self.max_workers = args.get('max_workers', 1000 if self.fast else 300)
 
-        # --- protocolo ---
+        # --- protocol ---
         self.protocol = (args.get('protocol') or 'both').lower()
         if self.protocol not in self.VALID_PROTOCOLS:
-            raise ValueError(f"protocol inválido: {self.protocol!r} (usa {self.VALID_PROTOCOLS})")
+            raise ValueError(f"invalid protocol: {self.protocol!r} (use {self.VALID_PROTOCOLS})")
 
-        # --- puertos (por protocolo) ---
+        # --- ports (per protocol) ---
         ports_arg = args.get('ports', None)
         self._ports_explicit = ports_arg is not None
 
         if self._ports_explicit:
-            puertos = self.parse_ports(ports_arg)
-            self.ports = {'tcp': puertos, 'udp': puertos}
+            ports = self.parse_ports(ports_arg)
+            self.ports = {'tcp': ports, 'udp': ports}
         else:
             full = list(range(1, 65536))
             if self.fast and self.protocol in ('udp', 'both'):
-                # UDP -> top; TCP -> full
+                # UDP -> top ports; TCP -> full range
                 self.ports = {
                     'tcp': full,
                     'udp': sorted(set(self.TOP_UDP_PORTS)),
@@ -79,10 +79,10 @@ class TocToc:
             else:
                 self.ports = {'tcp': full, 'udp': full}
 
-        # --- payload UDP ---
+        # --- UDP payload ---
         self.udp_payload = args.get('udp_payload', b"\x00")
 
-        # --- chequeo de ulimit ---
+        # --- ulimit check ---
         self._ulimit_warning = self._check_ulimit()
 
     # ---------- helpers ----------
@@ -93,19 +93,19 @@ class TocToc:
         if not arg:
             return list(range(1, 65536))
         ports = []
-        for parte in arg.split(","):
-            parte = parte.strip()
-            if not parte:
+        for part in arg.split(","):
+            part = part.strip()
+            if not part:
                 continue
-            if "-" in parte:
-                a, b = parte.split("-")
+            if "-" in part:
+                a, b = part.split("-")
                 ports.extend(range(int(a), int(b) + 1))
             else:
-                ports.append(int(parte))
+                ports.append(int(part))
         return sorted(set(ports))
 
     def _check_ulimit(self):
-        """Devuelve warning string si el soft limit de FDs es bajo, o None."""
+        """Returns a warning string if the FD soft limit is low, or None."""
         try:
             soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
         except Exception:
@@ -114,14 +114,14 @@ class TocToc:
         if soft != resource.RLIM_INFINITY and soft < needed:
             return (
                 f"[!] ulimit -n = {soft} < {needed} (workers*2). "
-                f"Ejecuta: ulimit -n {needed}  (o sube max_workers más bajo)"
+                f"Run: ulimit -n {needed}  (or lower max_workers)"
             )
         return None
 
-    # ---------- checks (devuelven estado) ----------
+    # ---------- checks (return status) ----------
 
     def check_tcp(self, port):
-        """Devuelve 'open' | 'closed' | 'filtered'."""
+        """Returns 'open' | 'closed' | 'filtered'."""
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(self._timeouts['tcp'])
         try:
@@ -137,7 +137,7 @@ class TocToc:
             s.close()
 
     def check_udp(self, port):
-        """Devuelve 'open' | 'open|filtered' | 'closed'."""
+        """Returns 'open' | 'open|filtered' | 'closed'."""
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(self._timeouts['udp'])
         try:
@@ -156,27 +156,27 @@ class TocToc:
         finally:
             s.close()
 
-    # ---------- motor de escaneo ----------
+    # ---------- scan engine ----------
 
     def _scan(self, proto, only_open=True):
         checker = self.check_tcp if proto == "tcp" else self.check_udp
         ports = self.ports[proto]
-        resultados = {}
+        results = {}
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as ex:
-            futuros = {ex.submit(checker, p): p for p in ports}
-            for fut in concurrent.futures.as_completed(futuros):
-                port = futuros[fut]
+            futures = {ex.submit(checker, p): p for p in ports}
+            for fut in concurrent.futures.as_completed(futures):
+                port = futures[fut]
                 try:
-                    resultados[port] = fut.result()
+                    results[port] = fut.result()
                 except Exception:
-                    resultados[port] = 'error'
+                    results[port] = 'error'
 
         if only_open:
-            return sorted(p for p, st in resultados.items() if st == 'open')
-        return dict(sorted(resultados.items()))
+            return sorted(p for p, st in results.items() if st == 'open')
+        return dict(sorted(results.items()))
 
-    # ---------- API pública ----------
+    # ---------- public API ----------
 
     def scan(self, proto=None, only_open=True):
         proto = (proto if proto is not None else self.protocol).lower()
@@ -186,7 +186,7 @@ class TocToc:
                 'udp': self._scan('udp', only_open=only_open),
             }
         if proto not in ('tcp', 'udp'):
-            raise ValueError(f"Protocolo inválido: {proto!r} (usa 'tcp', 'udp' o 'both')")
+            raise ValueError(f"Invalid protocol: {proto!r} (use 'tcp', 'udp' or 'both')")
         return self._scan(proto, only_open=only_open)
 
     def scan_all(self, only_open=True):
@@ -198,17 +198,17 @@ class TocToc:
     # ---------- info ----------
 
     def info(self):
-        """Resumen de la configuración efectiva (útil para debug)."""
-        lineas = [
+        """Summary of the effective configuration (useful for debugging)."""
+        lines = [
             f"Host        : {self.host}",
             f"Fast        : {self.fast}",
             f"Protocol    : {self.protocol}",
             f"Timeout TCP : {self._timeouts['tcp']}s",
             f"Timeout UDP : {self._timeouts['udp']}s",
             f"Workers     : {self.max_workers}",
-            f"Puertos TCP : {len(self.ports['tcp'])}",
-            f"Puertos UDP : {len(self.ports['udp'])}",
+            f"TCP ports   : {len(self.ports['tcp'])}",
+            f"UDP ports   : {len(self.ports['udp'])}",
         ]
         if self._ulimit_warning:
-            lineas.append(self._ulimit_warning)
-        return "\n".join(lineas)
+            lines.append(self._ulimit_warning)
+        return "\n".join(lines)
